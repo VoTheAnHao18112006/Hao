@@ -1,0 +1,937 @@
+import pygame
+import random
+import numpy as np
+import time
+pygame.mixer.init()
+pygame.mixer.music.load("Yiruma_-River-Flows-in-You.ogg")  # hoặc "background_music.mp3"
+pygame.mixer.music.set_volume(0.5)  # Âm lượng từ 0.0 đến 1.0
+pygame.mixer.music.play(-1)  # -1 để lặp vô hạn
+
+
+pygame.init()
+WIDTH, HEIGHT = 770, 600
+screen = pygame.display.set_mode((WIDTH, HEIGHT))
+pygame.display.set_caption("Killer Sudoku")
+
+# Font
+font = pygame.font.SysFont('comicsansms', 30)
+small_font = pygame.font.SysFont('comicsansms', 18)
+cage_font = pygame.font.SysFont('comicsansms', 12)
+note_font = pygame.font.SysFont('comicsansms', 9)
+input_font = pygame.font.SysFont('comicsansms', 24)
+
+# Color
+PINK = (255, 222, 235)
+DARK_PINK = (255, 182, 193)
+WHITE = (255, 255, 255)
+BLACK = (0, 0, 0)
+GRAY = (200, 200, 200)
+LIGHT_BLUE = (173, 216, 230)
+PURPLE = (221, 160, 221)
+
+# Game constants
+CELL_SIZE = 50
+BOARD_SIZE = 9
+
+# Game state
+game_state = "menu"  # "menu", "game", "win"
+difficulty = None
+board = None
+original_board = None
+solved_board = None  # Lưu bảng đã giải
+cages = {}  # Lưu thông tin các cụm số và tổng của chúng
+selected_cell = None
+win_time = None  # thêm ở đầu file
+timer = 0
+start_time = 0
+start_time = pygame.time.get_ticks() // 1000
+notes = np.zeros((9, 9, 9), dtype=bool)  # Ghi chú cho mỗi ô
+paused = False
+pause_start_time = 0
+pause_duration = 0
+
+# Button class
+class Button:
+    def __init__(self, x, y, text, callback):
+        self.rect = pygame.Rect(x, y, 240, 60)
+        self.text = text
+        self.callback = callback
+        self.pop_effect = False
+
+    def draw(self):
+        color = DARK_PINK if not self.pop_effect else GRAY
+        pygame.draw.rect(screen, color, self.rect, border_radius=12)
+        label = font.render(self.text, True, WHITE)
+        screen.blit(label, (self.rect.x + 40, self.rect.y + 12))
+        pygame.draw.rect(screen, WHITE, (self.rect.x + 10, self.rect.y + 25, 10, 10))
+
+    def check_click(self, pos):
+        if self.rect.collidepoint(pos):
+            self.pop_effect = True
+            pygame.time.set_timer(pygame.USEREVENT + 1, 200)
+            self.callback()
+    
+
+# Cloud + Sparkle animation
+class Cloud:
+    def __init__(self):
+        self.x = random.randint(-100, WIDTH)
+        self.y = random.randint(0, HEIGHT//2)
+        self.speed = random.uniform(0.2, 0.5)
+    def update(self):
+        self.x += self.speed
+        if self.x > WIDTH:
+            self.x = -100
+            self.y = random.randint(0, HEIGHT)
+        pygame.draw.ellipse(screen, WHITE, (self.x, self.y, 100, 40))
+
+class Sparkle:
+    def __init__(self):
+        self.x = random.randint(0, WIDTH)
+        self.y = random.randint(0, HEIGHT)
+        self.size = random.randint(1, 3)
+    def update(self):
+        pygame.draw.circle(screen, WHITE, (self.x, self.y), self.size)
+
+clouds = [Cloud() for _ in range(20)]
+sparkles = [Sparkle() for _ in range(60)]
+
+# Global menu state
+menu_state = "main"
+
+# Sudoku functions
+def solve(board):
+    """Giải bảng Sudoku bằng thuật toán quay lui"""
+    empty = find_empty(board)
+    if not empty:
+        return True
+    
+    row, col = empty
+    nums = list(range(1, 10))
+    random.shuffle(nums)  # Đảm bảo bảng ngẫu nhiên hơn
+    
+    for num in nums:
+        if is_valid(board, row, col, num):
+            board[row][col] = num
+            
+            if solve(board):
+                return True
+                
+            board[row][col] = 0
+            
+    return False
+
+def find_empty(board):
+    """Tìm ô trống đầu tiên trên bảng"""
+    for r in range(9):
+        for c in range(9):
+            if board[r][c] == 0:
+                return (r, c)
+    return None
+
+def is_valid(board, row, col, num):
+    """Kiểm tra xem số có hợp lệ với quy tắc Sudoku không"""
+    # Kiểm tra hàng
+    for c in range(9):
+        if board[row][c] == num:
+            return False
+            
+    # Kiểm tra cột
+    for r in range(9):
+        if board[r][col] == num:
+            return False
+            
+    # Kiểm tra ô 3x3
+    box_row, box_col = 3 * (row // 3), 3 * (col // 3)
+    for r in range(box_row, box_row + 3):
+        for c in range(box_col, box_col + 3):
+            if board[r][c] == num:
+                return False
+                
+    return True
+
+def generate_sudoku(difficulty='medium'):
+    """Tạo một bảng Sudoku ngẫu nhiên với các số ban đầu tùy theo độ khó"""
+    board = np.zeros((9, 9), dtype=int)
+    solve(board)
+    
+    # Lưu lại bảng đã giải hoàn chỉnh để dùng cho tính tổng cụm
+    solved_board = np.copy(board)
+    
+    # Điều chỉnh số lượng ô xóa theo độ khó
+    if difficulty == 'easy':
+        cells_to_remove = random.randint(40, 40)
+    elif difficulty == 'medium':
+        cells_to_remove = random.randint(60, 60)
+    else:  # hard - giảm số lượng ô xóa để không quá khó
+        cells_to_remove = random.randint(100, 100)
+
+    # Đảm bảo các ô giữ lại ở chế độ khó được phân bố đều trên bảng
+    if difficulty == 'hard':
+        # Chia bảng thành 9 vùng 3x3
+        regions = []
+        for i in range(0, 9, 3):
+            for j in range(0, 9, 3):
+                regions.append([(r, c) for r in range(i, i+3) for c in range(j, j+3)])
+        
+        # Đảm bảo mỗi vùng 3x3 có ít nhất 1-2 số
+        cells_per_region = 0  # Số lượng số hiển thị mỗi vùng 3x3
+        initial_cells = []
+        
+        for region in regions:
+            # Chọn ngẫu nhiên một số lượng cells_per_region từ mỗi vùng
+            selected = random.sample(region, cells_per_region)
+            initial_cells.extend(selected)
+        
+        # Đánh dấu các ô này để không xóa
+        must_keep = set(initial_cells)
+        
+        # Xóa các ô còn lại
+        all_cells = [(r, c) for r in range(9) for c in range(9) if (r, c) not in must_keep]
+        cells_to_remove = min(cells_to_remove, len(all_cells))
+        to_remove = random.sample(all_cells, cells_to_remove)
+        
+        for r, c in to_remove:
+            board[r, c] = 0
+    else:
+        # Chế độ dễ và trung bình: xóa ngẫu nhiên
+        removed = 0
+        while removed < cells_to_remove:
+            row, col = random.randint(0, 8), random.randint(0, 8)
+            if board[row][col] != 0:
+                board[row][col] = 0
+                removed += 1
+
+    return board, solved_board
+
+def is_adjacent(cell1, cell2):
+    """Kiểm tra xem hai ô có liền kề nhau không"""
+    r1, c1 = cell1
+    r2, c2 = cell2
+    return (abs(r1 - r2) <= 1 and abs(c1 - c2) <= 1) and (r1 != r2 or c1 != c2)
+
+def generate_connected_cage(start_row, start_col, size, visited, solved_board):
+    """Tạo một cụm liên thông với các số không trùng nhau"""
+    cells = [(start_row, start_col)]
+    visited.add((start_row, start_col))
+    used_numbers = {solved_board[start_row][start_col]}  # Số đã có trong cụm
+
+    for _ in range(size - 1):
+        candidates = []
+        for r, c in cells:
+            for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                nr, nc = r + dr, c + dc
+                if (0 <= nr < 9 and 0 <= nc < 9 and 
+                    (nr, nc) not in visited and 
+                    solved_board[nr][nc] not in used_numbers):
+                    candidates.append((nr, nc))
+
+        if not candidates:
+            break  # Hết ô hợp lệ để thêm
+
+        next_cell = random.choice(candidates)
+        cells.append(next_cell)
+        visited.add(next_cell)
+        used_numbers.add(solved_board[next_cell[0]][next_cell[1]])
+
+    return cells
+
+def generate_cages(solved_board, difficulty):
+    """Tạo các cụm tổng khối ngẫu nhiên với tính liên kết tốt hơn"""
+    cages = {}
+    visited = set()
+    
+    # Tạo số lượng cụm dựa theo độ khó
+    num_cages = 20
+    
+    for _ in range(num_cages):
+        # Tìm một ô chưa được sử dụng
+        if len(visited) >= 81:  # Đã sử dụng hết bảng
+            break
+            
+        # Tìm ô bắt đầu chưa được thăm
+        start_positions = [(r, c) for r in range(9) for c in range(9) if (r, c) not in visited]
+        if not start_positions:
+            break
+            
+        start_row, start_col = random.choice(start_positions)
+        
+        # Kích thước cụm khá nhỏ để dễ nhìn hơn
+        cage_size = random.randint(4, 7)
+
+        cells = generate_connected_cage(start_row, start_col, cage_size, visited, solved_board)
+        
+        # Tính tổng của các ô trong cụm dựa trên bảng đã giải hoàn chỉnh
+        total = sum(solved_board[r][c] for r, c in cells)
+        
+        # Lưu cụm và tổng
+        cages[tuple(sorted(cells))] = total
+    
+    return cages
+
+def draw_board():
+    # Vẽ nền trắng cho bảng
+    pygame.draw.rect(screen, WHITE, (45, 50, 450, 450))
+    
+    # Vẽ các ô và đường kẻ
+    for i in range(10):
+        line_width = 3 if i % 3 == 0 else 1
+        pygame.draw.line(screen, BLACK, (45, 50 + i*50), (495, 50 + i*50), line_width)
+        pygame.draw.line(screen, BLACK, (45 + i*50, 50), (45 + i*50, 500), line_width)
+    
+    # Vẽ các cụm tổng khối
+    draw_cages()
+    
+    # Vẽ số
+    for i in range(9):
+        for j in range(9):
+            if board[i][j] != 0:
+                # Nếu là số ban đầu (không thể thay đổi)
+                if original_board[i][j] != 0:
+                    text = input_font.render(str(board[i][j]), True, LIGHT_BLUE)
+                else:
+                    text = input_font.render(str(board[i][j]), True, BLACK)
+                screen.blit(text, (45 + j*50 + 18, 50 + i*50 + 12))
+            
+            # Vẽ các ghi chú nếu có
+            elif any(notes[i][j]):
+                for num in range(9):
+                    if notes[i][j][num]:
+                        note_text = note_font.render(str(num+1), True, BLACK)
+                        # Chia ô thành lưới 3x3 để vẽ ghi chú
+                        note_x = 49 + j*50 + 5 + (num % 3) * 15
+                        note_y = 50 + i*50 + 5 + (num // 3) * 15
+                        screen.blit(note_text, (note_x, note_y))
+    
+    # Vẽ ô được chọn
+    if selected_cell:
+        row, col = selected_cell
+        pygame.draw.rect(screen, PURPLE, (45 + col*50, 50 + row*50, 50, 50), 3)
+    
+    # Vẽ thời gian và độ khó
+    time_text = small_font.render(f"Time: {format_time(timer)}", True, BLACK)
+    diff_text = small_font.render(f"Difficulty: {difficulty.capitalize()}", True, BLACK)
+    screen.blit(time_text, (50, 510))
+    screen.blit(diff_text, (50, 540))
+    
+    # Vẽ nút quay lại
+    back_btn.draw()
+    
+    # Vẽ nút ghi chú
+    note_btn.draw()
+    hint_btn.draw()
+    reset_btn.draw()
+    pause_btn.draw()
+    
+
+def draw_cages():
+    """Vẽ các tổng cụm với đường nét đứt bao quanh toàn bộ cụm"""
+    # Nếu không có cụm tổng (chế độ dễ), thoát khỏi hàm
+    if not cages:
+        return
+        
+    for cells, total in cages.items():
+        cells_list = list(cells)
+        min_row = min(c[0] for c in cells_list)
+        min_col = min(c[1] for c in cells_list)
+        
+        # Tạo một hình chữ nhật nhỏ làm nền cho text
+        # Điều chỉnh vị trí để đảm bảo số nằm trong cụm
+        bg_rect = pygame.Rect(min_col * CELL_SIZE + 3 + 45, min_row * CELL_SIZE + 3 + 50, 16, 14)
+        
+        # Kiểm tra xem ô ở góc trên bên trái có phải là một phần của cụm không
+        is_corner_in_cage = (min_row, min_col) in cells_list
+        if is_corner_in_cage:
+            # Nếu có, vẽ số tổng ở góc trên bên trái
+            pygame.draw.rect(screen, WHITE, bg_rect)
+            total_text = cage_font.render(str(total), True, PURPLE)
+            screen.blit(total_text, (min_col * CELL_SIZE + 5 + 45, min_row * CELL_SIZE + 5 + 50))
+        else:
+            # Nếu không, tìm ô phù hợp nhất trong cụm để vẽ số tổng
+            # Ưu tiên ô ở trên cùng, sau đó là trái nhất
+            top_cells = [c for c in cells_list if c[0] == min_row]
+            if top_cells:
+                # Lấy ô trái nhất trong các ô trên cùng
+                left_most = min(top_cells, key=lambda x: x[1])
+                text_x = left_most[1] * CELL_SIZE + 5 + 45
+                text_y = left_most[0] * CELL_SIZE + 5 + 50
+            else:
+                # Nếu không có ô trên cùng, lấy ô trái nhất
+                left_cells = [c for c in cells_list if c[1] == min_col]
+                left_most = min(left_cells, key=lambda x: x[0])
+                text_x = left_most[1] * CELL_SIZE + 5 + 45
+                text_y = left_most[0] * CELL_SIZE + 5 + 50
+            
+            # Vẽ nền và số tổng
+            bg_rect = pygame.Rect(text_x - 2, text_y - 2, 16, 14)
+            pygame.draw.rect(screen, WHITE, bg_rect)
+            total_text = cage_font.render(str(total), True, PURPLE)
+            screen.blit(total_text, (text_x, text_y))
+        
+        # Xác định biên cần vẽ
+        borders = {}
+        for cell in cells_list:
+            r, c = cell
+            borders[(r, c)] = [True, True, True, True]  # [top, right, bottom, left]
+        
+        # Loại bỏ biên giữa các ô trong cùng cụm
+        for i, cell1 in enumerate(cells_list):
+            for cell2 in cells_list[i+1:]:
+                r1, c1 = cell1
+                r2, c2 = cell2
+                
+                # Ô liền kề theo chiều ngang
+                if r1 == r2 and abs(c1 - c2) == 1:
+                    if c1 < c2:  # cell1 bên trái cell2
+                        borders[(r1, c1)][1] = False  # Không vẽ biên phải của cell1
+                        borders[(r2, c2)][3] = False  # Không vẽ biên trái của cell2
+                    else:  # cell1 bên phải cell2
+                        borders[(r1, c1)][3] = False  # Không vẽ biên trái của cell1
+                        borders[(r2, c2)][1] = False  # Không vẽ biên phải của cell2
+                
+                # Ô liền kề theo chiều dọc
+                if c1 == c2 and abs(r1 - r2) == 1:
+                    if r1 < r2:  # cell1 bên trên cell2
+                        borders[(r1, c1)][2] = False  # Không vẽ biên dưới của cell1
+                        borders[(r2, c2)][0] = False  # Không vẽ biên trên của cell2
+                    else:  # cell1 bên dưới cell2
+                        borders[(r1, c1)][0] = False  # Không vẽ biên trên của cell1
+                        borders[(r2, c2)][2] = False  # Không vẽ biên dưới của cell2
+        
+        # Vẽ đường nét đứt
+        dash_len = 4
+        gap_len = 3
+        
+        for cell, sides in borders.items():
+            r, c = cell
+            x = c * CELL_SIZE + 3 + 45  # Thêm offset
+            y = r * CELL_SIZE + 3 + 50  # Thêm offset
+            w = CELL_SIZE - 6
+            h = CELL_SIZE - 6
+            
+            # Vẽ biên trên
+            if sides[0]:
+                for i in range(0, w, dash_len + gap_len):
+                    end_x = min(x + i + dash_len, x + w)
+                    pygame.draw.line(screen, PURPLE, (x + i, y), (end_x, y), 2)
+            
+            # Vẽ biên phải
+            if sides[1]:
+                for i in range(0, h, dash_len + gap_len):
+                    end_y = min(y + i + dash_len, y + h)
+                    pygame.draw.line(screen, PURPLE, (x + w, y + i), (x + w, end_y), 2)
+            
+            # Vẽ biên dưới
+            if sides[2]:
+                for i in range(0, w, dash_len + gap_len):
+                    end_x = min(x + i + dash_len, x + w)
+                    pygame.draw.line(screen, PURPLE, (x + i, y + h), (end_x, y + h), 2)
+            
+            # Vẽ biên trái
+            if sides[3]:
+                for i in range(0, h, dash_len + gap_len):
+                    end_y = min(y + i + dash_len, y + h)
+                    pygame.draw.line(screen, PURPLE, (x, y + i), (x, end_y), 2)
+
+def format_time(seconds):
+    minutes = seconds // 60
+    seconds = seconds % 60
+    return f"{minutes:02d}:{seconds:02d}"
+
+def check_win():
+    """Kiểm tra xem người chơi đã thắng chưa"""
+    # Kiểm tra xem tất cả các ô đã được điền chưa
+    if np.any(board == 0):
+        return False
+    
+    # Kiểm tra các quy tắc Sudoku
+    # Kiểm tra hàng
+    for row in range(9):
+        if len(set(board[row])) != 9:
+            return False
+    
+    # Kiểm tra cột
+    for col in range(9):
+        if len(set(board[:, col])) != 9:
+            return False
+    
+    # Kiểm tra các ô 3x3
+    for box_row in range(0, 9, 3):
+        for box_col in range(0, 9, 3):
+            box = [board[box_row+i][box_col+j] for i in range(3) for j in range(3)]
+            if len(set(box)) != 9:
+                return False
+    
+    # Kiểm tra các cụm tổng có đúng không
+    for cells, total in cages.items():
+        sum_value = sum(board[r][c] for r, c in cells)
+        if sum_value != total:
+            return False
+    
+    return True
+
+def handle_game_input(event):
+    global board, selected_cell, game_state, note_mode
+    
+    if event.type == pygame.MOUSEBUTTONDOWN:
+        x, y = event.pos
+        # Kiểm tra nếu nhấp vào bảng sudoku
+        if 45 <= x <= 495 and 50 <= y <= 500:
+            col = (x - 45) // 50
+            row = (y - 50) // 50
+            
+            # Chỉ cho phép chọn ô trống hoặc ô người chơi đã điền
+            if original_board[row][col] == 0:
+                selected_cell = (row, col)
+            else:
+                selected_cell = None
+        else:
+            # Kiểm tra các nút
+            back_btn.check_click(event.pos)
+    
+    elif event.type == pygame.KEYDOWN and selected_cell:
+        row, col = selected_cell
+        
+        # Chỉ cho phép thay đổi các ô trống ban đầu
+        if original_board[row][col] == 0:
+            if event.key == pygame.K_BACKSPACE or event.key == pygame.K_DELETE:
+                board[row][col] = 0
+                # Xóa cả ghi chú khi xóa số
+                notes[row][col] = [False] * 9
+            
+            elif pygame.K_1 <= event.key <= pygame.K_9:
+                num = event.key - pygame.K_0
+                
+                if note_mode:
+                    # Thêm/xóa ghi chú
+                    notes[row][col][num-1] = not notes[row][col][num-1]
+                else:
+                    # Điền số vào ô
+                    board[row][col] = num
+                    # Xóa ghi chú khi điền số
+                    notes[row][col] = [False] * 9
+                    
+                    # Kiểm tra thắng sau khi điền số
+                    if check_win():
+                        game_state = "win"
+
+def toggle_note_mode():
+    global note_mode
+    note_mode = not note_mode
+    note_btn.text = "Notes: ON" if note_mode else "Notes: OFF"
+
+
+def set_menu(new_state):
+    global menu_state
+    menu_state = new_state
+
+def set_game_state(new_state):
+    global game_state, start_time
+    game_state = new_state
+    if new_state == "game":
+        start_time = 0
+        start_time = pygame.time.get_ticks() // 1000
+
+def start_game(): 
+    global win_time,start_time,timer
+    win_time = None
+    timer = 0
+    start_time = 0
+    start_time = pygame.time.get_ticks()
+    set_menu("difficulty")
+
+def back_to_main(): 
+    global menu_state, game_state,new_state,hint_used,out_of_hint,timer,win_time,start_time,show_scores,showing_scores,leaderboard_tab_selected
+    menu_state = "main"
+    game_state = "menu"
+    hint_used = 0          # Reset lại số lần đã dùng hint
+    out_of_hint = False    # Cho phép dùng hint lại
+    timer = 0
+    win_time = None
+    start_time = 0
+    start_time = pygame.time.get_ticks()
+    show_scores = False
+    showing_scores = False
+    leaderboard_tab_selected = False
+    set_menu("main")
+    set_game_state("menu")
+
+def quit_game(): 
+    pygame.quit()
+    exit()
+
+def easy_mode():
+    global board, original_board, solved_board, difficulty, cages, note_mode,timer
+    global notes,win_time,start_time,pause_duration
+    difficulty = "easy"
+    board_np, solved_board_np = generate_sudoku("easy")
+    # Chuyển đổi thành mảng numpy để dễ xử lý
+    board = board_np
+    solved_board = solved_board_np
+    original_board = np.copy(board)
+    # Tạo các cụm tổng khối
+    cages = generate_cages(solved_board, "easy")
+    # Reset ghi chú
+    notes = np.zeros((9, 9, 9), dtype=bool)
+    timer = 0
+    win_time = None
+    start_time = 0
+    pause_duration = 0
+    start_time = pygame.time.get_ticks() //1000
+    # Reset chế độ ghi chú
+    note_mode = False
+    note_btn.text = "Notes: OFF"
+    set_game_state("game")
+
+def medium_mode():
+    global board, original_board, solved_board, difficulty, cages, note_mode,notes,win_time,timer
+    global start_time,pause_duration
+    difficulty = "medium"
+    board_np, solved_board_np = generate_sudoku("medium")
+    board = board_np
+    solved_board = solved_board_np
+    original_board = np.copy(board)
+    cages = generate_cages(solved_board, "medium")
+    notes = np.zeros((9, 9, 9), dtype=bool)
+    timer = 0
+    win_time = None
+    start_time = 0
+    pause_duration = 0
+    start_time = pygame.time.get_ticks() // 1000
+    note_mode = False
+    note_btn.text = "Notes: OFF"
+    set_game_state("game")
+
+def hard_mode():
+    global board, original_board, solved_board, difficulty, cages, note_mode,notes,win_time,timer
+    global start_time,pause_duration
+    difficulty = "hard"
+    board_np, solved_board_np = generate_sudoku("hard")
+    board = board_np
+    solved_board = solved_board_np
+    original_board = np.copy(board)
+    cages = generate_cages(solved_board, "hard")
+    notes = np.zeros((9, 9, 9), dtype=bool)
+    set_game_state("game")
+
+def play_again():
+    global win_time,timer,start_time,pause_duration  # ← thêm dòng này
+    timer = 0
+    win_time = None  # ← reset luôn win_time khi bấm Play Again
+    start_time = 0
+    pause_duration = 0
+    start_time = pygame.time.get_ticks()    # Reset start_time khi bấm Play Again
+    back_to_main()
+
+# Khởi tạo chế độ ghi chú
+note_mode = False
+
+# Buttons
+main_buttons = [
+    Button(260, 200, "Start!!!", start_game),
+    Button(260, 290, "Quit Game", quit_game),
+]
+
+difficulty_buttons = [
+    Button(260, 160, "Easy", easy_mode),
+    Button(260, 240, "Medium", medium_mode),
+    Button(260, 320, "Hard", hard_mode),
+    Button(260, 400, "Back", back_to_main),
+]
+
+
+paused = False  # Trạng thái tạm dừng
+
+def give_hint():
+    global board, solved_board, selected_cell
+    if selected_cell:
+        r, c = selected_cell
+        if board[r][c] == 0:
+            board[r][c] = solved_board[r][c]
+
+hint_cell = None  # Biến lưu ô được gợi ý, mặc định chưa có
+hint_start_time = None  # Thời điểm bắt đầu highlight hint
+HINT_DURATION = 1.5     # Thời gian highlight hint (giây)
+hint_limit = 3       # Giới hạn số lần gợi ý
+hint_used = 0        # Đếm số lần đã gợi ý
+out_of_hint = True  # Biến kiểm tra hết gợi ý
+#các biến tính điểm
+score = 0  # Điểm hiện tại
+hint_stock = 3  # Số lượt hint có thể dùng
+correct_fill_count = 0  # Đếm số ô đúng đã điền
+def hint_game():
+    global hint_used, hint_limit,hint_start_time,hint_used,hint_cell,out_of_hint,hint_stock,score
+    if hint_stock > 0 or hint_used < hint_limit:  # Còn gợi ý
+            empty_cells = [(r, c) for r in range(9) for c in range(9) if board[r][c] == 0]
+            if empty_cells:
+                hint_cell = random.choice(empty_cells)
+                row, col = hint_cell
+                board[row][col] = solved_board[row][col]
+                hint_start_time = time.time()
+                if hint_stock > 0:
+                    hint_stock -= 1  # Dùng lượt miễn phí
+                else:
+                    score = max(0, score - 1)  # Không đủ -> trừ 1 điểm
+                hint_used += 1  # Tăng số lần dùng
+    else:
+        out_of_hint = True  # Đã hết gợi ý
+
+def reset_game(new_difficulty=None):
+    global board, solved_board, original_board, cages, notes, timer, start_time
+    global hint_used,out_of_hint,win_time,player_name,input_active
+    board, solved_board = generate_sudoku(difficulty)
+    original_board = np.copy(board)
+    notes = np.zeros((9, 9, 9), dtype=bool)
+    cages = generate_cages(solved_board, difficulty)
+    hint_used = 0          # Reset lại số lần đã dùng hint
+    out_of_hint = False    # Cho phép dùng hint lại
+    timer = 0
+    win_time = None
+    start_time = 0
+    start_time = pygame.time.get_ticks()
+    player_name = ""
+    input_active = True
+
+
+def toggle_pause():
+    global paused, pause_start_time, pause_duration, start_time
+    if not paused:
+        # Bắt đầu tạm dừng
+        paused = True
+        pause_start_time = pygame.time.get_ticks()
+    else:
+        # Tiếp tục chạy => cập nhật lại start_time để bù trừ phần thời gian đã dừng
+        paused = False
+        pause_duration += pygame.time.get_ticks() - pause_start_time
+        start_time += pygame.time.get_ticks() - pause_start_time
+
+import json
+
+player_name = ""
+input_active = True
+menu_state = "main"  # để chuyển giữa "main", "difficulty", "leaderboard"
+show_scores = False
+showing_scores = False
+leaderboard_tab_selected = False
+def save_score(name, time, difficulty):
+    score = {
+        "name": name,
+        "time": time,
+    }
+    
+    try:
+        with open("leaderboard.json", "r") as f:
+            data = json.load(f)
+    except FileNotFoundError:
+        data = {"easy": [], "medium": [], "hard": []}
+    if difficulty not in data:
+        data[difficulty] = []
+    data[difficulty].append(score)
+    data[difficulty] = sorted(data[difficulty], key=lambda x: x["time"])[:10]  # Giữ top 10 nhanh nhất
+    with open("leaderboard.json", "w") as f:
+        json.dump(data, f, indent=4)
+def draw_leaderboard():
+    try:
+        with open("leaderboard.json", "r") as f:
+            scores = json.load(f)
+    except FileNotFoundError:
+        scores = {"easy": [], "medium": [], "hard": []}
+
+    current_scores = scores.get(current_difficulty_tab, [])
+
+    title = font.render(f"Leaderboard - {current_difficulty_tab.capitalize()}", True, DARK_PINK)
+    screen.blit(title, (180, 50))
+
+    for i, score in enumerate(current_scores):
+        name = score.get("name", "???")
+        time_val = score.get("time", 0)
+        text = small_font.render(f"{i+1}. {score['name']} - {score['time']}s", True, BLACK)
+        screen.blit(text, (100, 100 + i * 30))
+
+easy_tab_btn = Button(260, 160, "EasyBoard", lambda: set_leaderboard_tab("easy"))
+medium_tab_btn = Button(260, 240, "MediumBoard", lambda: set_leaderboard_tab("medium"))
+hard_tab_btn = Button(260, 320, "HardBoard", lambda: set_leaderboard_tab("hard"))
+back_tab_btn = Button(260, 400, "BackBoard", back_to_main)
+current_difficulty_tab = "easy"
+def set_leaderboard_tab(diff):
+    global current_difficulty_tab,show_scores,leaderboard_tab_selected,showing_scores
+    current_difficulty_tab = diff
+    show_scores = True
+    showing_scores = True
+    leaderboard_tab_selected = True
+def set_menu_state(state):
+    global menu_state,start_time,showing_scores,show_scores,leaderboard_tab_selected
+    menu_state = state
+    showing_scores = False
+    show_scores = False
+    leaderboard_tab_selected = False
+leaderboard_btn = Button(260, 380, "Leaderboard", lambda: set_menu_state("leaderboard"))
+main_buttons.append(leaderboard_btn)
+
+music_on = True
+def toggle_music():
+    global music_on
+    if music_on:
+        pygame.mixer.music.pause()
+    else:
+        pygame.mixer.music.unpause()
+    music_on = not music_on
+    music_btn.text = f"Music: {'ON' if music_on else 'OFF'}"
+music_btn = Button(20, 20, "Music: ON", toggle_music)
+main_buttons.append(music_btn)
+
+
+back_btn = Button(520, 100, "Back", back_to_main)
+note_btn = Button(520, 20, "Notes: OFF", toggle_note_mode)
+play_again_btn = Button(520, 180, "Play Again", play_again)
+hint_btn = Button(520, 180, "Hint ", hint_game)
+reset_btn = Button(520, 260, "Reset Game ", reset_game)
+pause_btn = Button(520, 340, "Pause/Resume ", toggle_pause)
+
+# Main game loop
+running = True
+while running:
+    
+    # Fill background
+    screen.fill(PINK)
+    
+    # Draw clouds and sparkles for menu
+    if game_state == "menu":
+        for cloud in clouds: 
+            cloud.update()
+        for sparkle in sparkles: 
+            sparkle.update()
+    
+    # Handle events
+    for event in pygame.event.get():
+        if event.type == pygame.QUIT:
+            running = False
+        elif event.type == pygame.MOUSEBUTTONDOWN:
+                pos = pygame.mouse.get_pos()
+                back_btn.check_click(pos)
+                note_btn.check_click(pos)
+                hint_btn.check_click(pos)
+                reset_btn.check_click(pos)
+                pause_btn.check_click(pos)
+                
+        
+        if game_state == "menu":
+            if event.type == pygame.MOUSEBUTTONDOWN:
+                if menu_state == "main":
+                    for btn in main_buttons:
+                        btn.check_click(event.pos)
+                elif menu_state == "difficulty":
+                    for btn in difficulty_buttons:
+                        btn.check_click(event.pos)
+                        reset_game("difficulty")
+                elif menu_state == "leaderboard" and event.type == pygame.MOUSEBUTTONDOWN:
+                    pos = event.pos
+                    if not leaderboard_tab_selected:
+                        easy_tab_btn.check_click(pos)
+                        medium_tab_btn.check_click(pos)
+                        hard_tab_btn.check_click(pos)
+                        back_tab_btn.check_click(pos)
+                    else:
+                        back_btn.check_click(pos)
+                    
+
+        
+        elif game_state == "game":
+            handle_game_input(event)
+        
+        elif game_state == "win":
+            if event.type == pygame.MOUSEBUTTONDOWN:
+                play_again_btn.check_click(event.pos)
+                back_btn.check_click(pos)
+            elif event.type == pygame.KEYDOWN and input_active:
+                if event.key == pygame.K_BACKSPACE:
+                    player_name = player_name[:-1]
+                elif event.key == pygame.K_RETURN:
+                    input_active = False
+                    save_score(player_name, timer, difficulty)
+                else:
+                    if len(player_name) < 12 and event.unicode.isprintable():
+                        player_name += event.unicode
+            
+
+        
+        if event.type == pygame.USEREVENT + 1:
+            for btn in main_buttons + difficulty_buttons:
+                btn.pop_effect = False
+            back_btn.pop_effect = False
+            note_btn.pop_effect = False
+            play_again_btn.pop_effect = False
+            hint_btn.pop_effect = False
+            reset_btn.pop_effect = False
+            pause_btn.pop_effect = False
+            easy_tab_btn.pop_effect = False
+            medium_tab_btn.pop_effect = False
+            hard_tab_btn.pop_effect = False
+            back_tab_btn.pop_effect = False
+            
+    if game_state == "game" and not paused and win_time is None:
+        timer = (pygame.time.get_ticks() - start_time ) // 1000 
+    elif game_state == "win":
+        if win_time is None:
+            win_time = (pygame.time.get_ticks() - start_time) // 1000  # ✅ Chốt thời gian thật
+
+        timer = win_time  # Giữ nguyên timer, không tăng nữa
+        start_time = 0
+
+    # Draw based on game state
+    if game_state == "menu":
+        if menu_state != "leaderboard" or not showing_scores:
+            pygame.draw.rect(screen, WHITE, (240, 90, 290, 420), border_radius=20)
+            if menu_state == "main" or menu_state == "difficulty":
+                title = font.render("Killer Sudoku UwU", True, DARK_PINK)
+                screen.blit(title, (260, 120))
+            elif menu_state == "leaderboard" and not leaderboard_tab_selected:
+                title = font.render("Leaderboard Killer", True, DARK_PINK)
+                screen.blit(title, (260, 120))
+
+        
+        if menu_state == "main":
+            for btn in main_buttons: 
+                btn.draw()
+        elif menu_state == "difficulty":
+            for btn in difficulty_buttons: 
+                btn.draw()
+        if menu_state == "leaderboard":
+            if show_scores:
+                draw_leaderboard()
+                back_btn.draw()
+            if not leaderboard_tab_selected:
+                easy_tab_btn.draw()
+                medium_tab_btn.draw()
+                hard_tab_btn.draw()
+                back_tab_btn.draw()
+            
+                
+    
+    elif game_state == "game":
+        draw_board()
+    
+    elif game_state == "win":
+        # Draw win screen
+        pygame.draw.rect(screen, WHITE, (120, 120, 300, 300), border_radius=20)
+        
+        win_text = font.render("You Win!", True, DARK_PINK)
+        time_text = small_font.render(f"Time: {format_time(win_time)}", True, BLACK)
+        diff_text = small_font.render(f"Difficulty: {difficulty.capitalize()}", True, BLACK)
+        
+        screen.blit(win_text, (200, 160))
+        screen.blit(time_text, (180, 220))
+        screen.blit(diff_text, (180, 250))
+        if input_active:
+            name_text = small_font.render(f"Your name: {player_name}", True, BLACK)
+            screen.blit(name_text, (180, 290))
+            enter_text = small_font.render("Press Enter to Save Score", True, DARK_PINK)
+            screen.blit(enter_text, (150, 320))
+        else:
+            thank_text = small_font.render("Saved! Press Play Again!", True, DARK_PINK)
+            screen.blit(thank_text, (150, 320))
+        play_again_btn.draw()
+    
+    pygame.display.update()
+
+pygame.quit()
